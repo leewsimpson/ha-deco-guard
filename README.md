@@ -35,7 +35,9 @@ A persistent notification with a link to the page is also created for every quar
 - **pending**: new and quarantined (blocked) until reviewed. Re-blocked every poll if someone unblocks it in the Deco app.
 - **denied**: reviewed and kept blocked. Also re-blocked every poll.
 
-Unblocking a pending or denied device approves it. *Forget* unblocks the device and deletes the record, so if it connects again it's treated as new.
+Unblocking a pending or denied device approves it.
+
+**Blocks are enforced from Home Assistant.** Every poll re-applies any block that has gone missing from the router (someone unblocked it in the Deco app, a router reset, etc.). A block added in the Deco app is adopted and enforced the same way. To unblock, use Home Assistant: the switch, the Deco Guard page or `deco_guard.unblock_device`. *Forget* unblocks the device and deletes the record, so if it connects again it's treated as new.
 
 ## Notes and limits
 
@@ -43,8 +45,18 @@ Unblocking a pending or denied device approves it. *Forget* unblocks the device 
 - A brand-new device can have up to one poll interval of access before it is blocked (configurable in the integration options, minimum 15 s).
 - The Deco only reports connected clients, so names for blocked devices come from what the integration saw before blocking them.
 - Deco mesh nodes are never blocked.
+- A blocked device can still reach other devices on the same LAN switch (e.g. a ping from a wired PC). The block cuts it off at the Deco, which includes the internet.
 - If the stored password stops working, polling stops and HA asks you to re-authenticate. Repeated bad logins lock the Deco admin account for a while.
 - The integration keeps a logged-in admin session on the Deco, much like having the web UI open.
+
+## Development
+
+```bash
+pip install pytest-homeassistant-custom-component
+pytest -q
+```
+
+Tests use a fake router (`tests/conftest.py`) and need Linux or macOS. HA's test harness imports POSIX-only modules.
 
 ## Credits
 

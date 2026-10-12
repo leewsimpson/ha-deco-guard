@@ -49,6 +49,7 @@ async def _async_reload(hass: HomeAssistant, entry: DecoGuardConfigEntry) -> Non
 async def async_unload_entry(hass: HomeAssistant, entry: DecoGuardConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
+        await entry.runtime_data.async_flush()
         await hass.async_add_executor_job(entry.runtime_data.client.close)
         if not [
             e

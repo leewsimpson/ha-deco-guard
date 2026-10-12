@@ -42,6 +42,7 @@ class DecoData:
     """Snapshot of one poll."""
 
     online: dict[str, dict[str, Any]] = field(default_factory=dict)
+    listed: dict[str, dict[str, Any]] = field(default_factory=dict)  # incl. blocked clients
     blocked: set[str] = field(default_factory=set)
     nodes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -81,6 +82,10 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
     def _save(self) -> None:
         self._store.async_delay_save(lambda: self.store_data, 1)
 
+    async def async_flush(self) -> None:
+        """Write pending changes now (on unload), so a quick reload can't lose reviews."""
+        await self._store.async_save(self.store_data)
+
     @property
     def devices(self) -> dict[str, dict[str, Any]]:
         return self.store_data["devices"]
@@ -114,8 +119,11 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
         except DecoError as err:
             raise UpdateFailed(str(err)) from err
 
+        listed = {normalize_mac(c["mac"]): c for c in clients if c.get("mac")}
+        # Blocked clients stay in client_list (without an IP), so drop them from "online".
         data = DecoData(
-            online={normalize_mac(c["mac"]): c for c in clients if c.get("mac")},
+            online={mac: c for mac, c in listed.items() if mac not in blocked},
+            listed=listed,
             blocked=blocked,
             nodes={normalize_mac(n["mac"]): n for n in nodes if n.get("mac")},
         )
@@ -127,14 +135,15 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
         now = dt_util.utcnow().isoformat()
         changed = False
 
-        for mac, client in data.online.items():
+        for mac, client in data.listed.items():
             dev = self.devices.get(mac)
-            info = {k: client.get(k) for k in _KEEP}
+            info = {k: v for k in _KEEP if (v := client.get(k)) not in (None, "")}
             if dev is not None:
-                if any(dev.get(k) != v for k, v in info.items() if v not in (None, "")):
-                    dev.update({k: v for k, v in info.items() if v not in (None, "")})
+                if any(dev.get(k) != v for k, v in info.items()):
+                    dev.update(info)
                     changed = True
-                dev["last_seen"] = now
+                if mac in data.online:
+                    dev["last_seen"] = now
 
         if not self.store_data.get("seeded"):
             # First run: everything already on the network (or already blocked) is trusted,
@@ -142,22 +151,33 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
             for mac, client in data.online.items():
                 self.devices[mac] = self._new_record(mac, client, STATUS_APPROVED, now)
             for mac in data.blocked:
-                self.devices.setdefault(mac, self._new_record(mac, {}, STATUS_APPROVED, now))
+                rec = self.devices.setdefault(
+                    mac, self._new_record(mac, data.listed.get(mac, {}), STATUS_APPROVED, now)
+                )
+                rec["blocked"] = True
             self.store_data["seeded"] = True
-            self._save()
+            await self.async_flush()
             _LOGGER.info("Seeded %d known devices as approved", len(self.devices))
             return
 
         new_approved: list[str] = []
         new_pending: list[str] = []
+        # A block added outside HA (e.g. in the Deco app) is adopted, so it is enforced too.
+        for mac in data.blocked:
+            if mac in data.nodes:
+                continue
+            dev = self.devices.get(mac)
+            if dev is None:
+                client = data.listed.get(mac, {})
+                dev = self.devices[mac] = self._new_record(mac, client, STATUS_APPROVED, now)
+                new_approved.append(mac)
+            if not dev.get("blocked"):
+                dev["blocked"] = True
+                changed = True
         for mac, client in data.online.items():
             if mac in self.devices or mac in data.nodes:
                 continue
-            if mac in data.blocked:
-                # Blocked outside HA (Deco app) but still listed: just remember it.
-                self.devices[mac] = self._new_record(mac, client, STATUS_APPROVED, now)
-                new_approved.append(mac)
-            elif self.auto_block:
+            if self.auto_block:
                 self.devices[mac] = self._new_record(mac, client, STATUS_PENDING, now)
                 new_pending.append(mac)
             else:
@@ -165,11 +185,14 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
                 new_approved.append(mac)
             changed = True
 
-        # Quarantined / denied devices must stay blocked, even if unblocked in the Deco app.
+        # Pending, denied and parental-blocked devices must stay blocked: re-apply the block
+        # if it disappears from the router (unblocked in the Deco app, router reset, ...).
         enforce = [
             mac
-            for mac in self.macs_with_status(STATUS_PENDING) + self.macs_with_status(STATUS_DENIED)
-            if mac not in data.blocked and mac not in data.nodes
+            for mac, dev in self.devices.items()
+            if (dev.get("blocked") or dev.get("status") in (STATUS_PENDING, STATUS_DENIED))
+            and mac not in data.blocked
+            and mac not in data.nodes
         ]
         if enforce:
             try:
@@ -177,9 +200,9 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
                 data.blocked.update(enforce)
                 for mac in enforce:
                     data.online.pop(mac, None)
-                _LOGGER.info("Blocked unapproved devices: %s", ", ".join(enforce))
+                _LOGGER.info("Re-applied blocks: %s", ", ".join(enforce))
             except DecoError as err:
-                _LOGGER.error("Failed to block unapproved devices %s: %s", enforce, err)
+                _LOGGER.error("Failed to re-apply blocks %s: %s", enforce, err)
 
         for mac in new_pending:
             self._announce(mac)
@@ -193,7 +216,12 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
     @staticmethod
     def _new_record(mac: str, client: dict[str, Any], status: str, now: str) -> dict[str, Any]:
         rec = {k: client.get(k) for k in _KEEP}
-        rec.update(status=status, first_seen=now, last_seen=now if client else None)
+        rec.update(
+            status=status,
+            blocked=status != STATUS_APPROVED,
+            first_seen=now,
+            last_seen=now if client else None,
+        )
         return rec
 
     def _announce(self, mac: str) -> None:
@@ -236,7 +264,7 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
         if self.data and mac in self.data.nodes:
             raise HomeAssistantError("Refusing to block a Deco node")
         await self._router(self.client.block, [mac])
-        self._ensure(mac)
+        self._ensure(mac)["blocked"] = True
         self._after_change(mac, blocked=True)
 
     async def async_unblock(self, mac: str) -> None:
@@ -244,6 +272,7 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
         mac = self._require(mac)
         await self._router(self.client.unblock, [mac])
         dev = self._ensure(mac)
+        dev["blocked"] = False
         if dev.get("status") != STATUS_APPROVED:
             await self._mark(mac, STATUS_APPROVED)
         self._after_change(mac, blocked=False)
@@ -253,6 +282,7 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
         if mac not in self.devices:
             raise HomeAssistantError(f"Unknown device {mac}")
         await self._router(self.client.unblock, [mac])
+        self.devices[mac]["blocked"] = False
         await self._mark(mac, STATUS_APPROVED)
         self._after_change(mac, blocked=False)
 
@@ -261,14 +291,14 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
         if self.data and mac in self.data.nodes:
             raise HomeAssistantError("Refusing to block a Deco node")
         await self._router(self.client.block, [mac])
-        self._ensure(mac)
+        self._ensure(mac)["blocked"] = True
         await self._mark(mac, STATUS_DENIED)
         self._after_change(mac, blocked=True)
 
     async def async_forget(self, mac: str) -> None:
         """Unblock and forget a device; if it reconnects it is treated as new."""
         mac = self._require(mac)
-        if self.data and mac in self.data.blocked:
+        if (self.data and mac in self.data.blocked) or self.devices.get(mac, {}).get("blocked"):
             await self._router(self.client.unblock, [mac])
         self.devices.pop(mac, None)
         persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_{mac}")
