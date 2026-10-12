@@ -1,28 +1,41 @@
 block_device:
   fields:
+    device_id: &device
+      required: false
+      selector:
+        device:
+          multiple: true
+          filter:
+            integration: deco_guard
     mac: &mac
-      required: true
+      required: false
       example: "AA-BB-CC-DD-EE-FF"
       selector:
         text:
+          multiple: true
     config_entry_id: &entry
       required: false
+      advanced: true
       selector:
         config_entry:
           integration: deco_guard
 unblock_device:
   fields:
+    device_id: *device
     mac: *mac
     config_entry_id: *entry
 approve_device:
   fields:
+    device_id: *device
     mac: *mac
     config_entry_id: *entry
 deny_device:
   fields:
+    device_id: *device
     mac: *mac
     config_entry_id: *entry
 forget_device:
   fields:
+    device_id: *device
     mac: *mac
     config_entry_id: *entry

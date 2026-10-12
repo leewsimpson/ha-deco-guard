@@ -191,3 +191,24 @@ async def test_auth_failure_starts_reauth(hass, deco, fail):
     assert any(
         f["context"]["source"] == "reauth" for f in hass.config_entries.flow.async_progress()
     )
+
+
+async def test_block_by_device_picker(hass, setup, deco):
+    from homeassistant.helpers import entity_registry as er
+
+    device_id = er.async_get(hass).async_get(LAPTOP_SWITCH).device_id
+    await hass.services.async_call(
+        DOMAIN, "block_device", {"device_id": [device_id]}, blocking=True
+    )
+    assert LAPTOP in deco.blocked
+    await hass.services.async_call(
+        DOMAIN, "unblock_device", {"device_id": device_id}, blocking=True
+    )
+    assert LAPTOP not in deco.blocked
+
+
+async def test_service_needs_device_or_mac(hass, setup, deco):
+    import voluptuous as vol
+
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(DOMAIN, "block_device", {}, blocking=True)
