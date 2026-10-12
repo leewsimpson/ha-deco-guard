@@ -231,8 +231,14 @@ class DecoClient:
             envelope = resp.json()
         except ValueError:
             envelope = None
-        if not isinstance(envelope, dict) or resp.status_code in (401, 403):
-            # Session expired (login HTML or 401/403): log in again once and resend.
+        if (
+            not isinstance(envelope, dict)
+            or resp.status_code in (401, 403)
+            # Another login (web UI, another client) took over the session: the Deco then
+            # answers HTTP 200 with an empty `data` and no error_code.
+            or (envelope.get("data") == "" and "error_code" not in envelope)
+        ):
+            # Session expired (login HTML, 401/403 or taken over): log in again once and resend.
             if not retry:
                 raise DecoError(f"Deco rejected request '{path}' (HTTP {resp.status_code})")
             self._cipher = None
