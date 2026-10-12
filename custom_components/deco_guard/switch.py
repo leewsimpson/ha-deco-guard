@@ -64,7 +64,8 @@ class DeviceAccessSwitch(CoordinatorEntity[DecoGuardCoordinator], SwitchEntity):
         self._attr_unique_id = f"{mac}_network_access"
         self._attr_device_info = DeviceInfo(
             connections={(CONNECTION_NETWORK_MAC, mac.lower().replace("-", ":"))},
-            name=coordinator.display_name(mac),
+            # default_name: don't rename a device another integration already owns.
+            default_name=coordinator.display_name(mac),
             via_device=(DOMAIN, coordinator.config_entry.entry_id),
         )
 
