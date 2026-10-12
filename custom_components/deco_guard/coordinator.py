@@ -255,7 +255,7 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
 
     def _ensure(self, mac: str) -> dict[str, Any]:
         now = dt_util.utcnow().isoformat()
-        client = self.data.online.get(mac, {}) if self.data else {}
+        client = self.data.listed.get(mac, {}) if self.data else {}
         return self.devices.setdefault(mac, self._new_record(mac, client, STATUS_APPROVED, now))
 
     async def async_block(self, mac: str) -> None:
