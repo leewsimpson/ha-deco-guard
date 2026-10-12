@@ -1,0 +1,85 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to your Deco",
+        "description": "Use the address of the main Deco (the gateway) and the local admin password (the one you use in the Deco app).",
+        "data": { "host": "Main Deco address", "password": "Password" }
+      },
+      "reauth_confirm": {
+        "title": "Re-enter Deco password",
+        "description": "The Deco rejected the stored password. Polling has stopped so the admin account isn't locked out.",
+        "data": { "password": "Password" }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot reach the Deco (or it isn't the main node).",
+      "invalid_auth": "Login failed. Check the password. The Deco locks the account after repeated failures."
+    },
+    "abort": {
+      "already_configured": "This Deco is already configured.",
+      "reauth_successful": "Password updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Deco Guard options",
+        "data": { "scan_interval": "Poll interval (seconds). New devices are blocked within one interval." }
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "network_access": { "name": "Network access" },
+      "auto_block": { "name": "Auto-block new devices" }
+    },
+    "sensor": {
+      "pending_devices": { "name": "Pending devices" },
+      "blocked_devices": { "name": "Blocked devices" },
+      "online_devices": { "name": "Online devices" }
+    }
+  },
+  "services": {
+    "block_device": {
+      "name": "Block device",
+      "description": "Block a device at the Deco (router-level MAC block, not bypassable with a VPN).",
+      "fields": {
+        "mac": { "name": "MAC address", "description": "e.g. AA-BB-CC-DD-EE-FF or aa:bb:cc:dd:ee:ff" },
+        "config_entry_id": { "name": "Deco", "description": "Only needed with more than one Deco network." }
+      }
+    },
+    "unblock_device": {
+      "name": "Unblock device",
+      "description": "Unblock a device. Unblocking a pending or denied device also approves it.",
+      "fields": {
+        "mac": { "name": "MAC address", "description": "e.g. AA-BB-CC-DD-EE-FF" },
+        "config_entry_id": { "name": "Deco", "description": "Only needed with more than one Deco network." }
+      }
+    },
+    "approve_device": {
+      "name": "Approve device",
+      "description": "Approve a pending device and unblock it.",
+      "fields": {
+        "mac": { "name": "MAC address", "description": "e.g. AA-BB-CC-DD-EE-FF" },
+        "config_entry_id": { "name": "Deco", "description": "Only needed with more than one Deco network." }
+      }
+    },
+    "deny_device": {
+      "name": "Deny device",
+      "description": "Keep a device blocked permanently (re-blocked if unblocked elsewhere).",
+      "fields": {
+        "mac": { "name": "MAC address", "description": "e.g. AA-BB-CC-DD-EE-FF" },
+        "config_entry_id": { "name": "Deco", "description": "Only needed with more than one Deco network." }
+      }
+    },
+    "forget_device": {
+      "name": "Forget device",
+      "description": "Unblock and forget a device. If it connects again it is treated as new.",
+      "fields": {
+        "mac": { "name": "MAC address", "description": "e.g. AA-BB-CC-DD-EE-FF" },
+        "config_entry_id": { "name": "Deco", "description": "Only needed with more than one Deco network." }
+      }
+    }
+  }
+}
