@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -30,11 +32,15 @@ from .const import (
     STATUS_PENDING,
     STORAGE_VERSION,
 )
+from .trace import Trace
 
 _LOGGER = logging.getLogger(__name__)
 
 # Client fields kept for display (the block list only returns MACs, so names come from here).
 _KEEP = ("name", "ip", "client_type", "wire_type", "connection_type", "interface")
+
+# Seconds after a block/unblock at which the router is re-read for the trace.
+PROBE_DELAYS = (5, 30, 120)
 
 
 @dataclass
@@ -69,6 +75,7 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
         )
         # {"seeded": bool, "auto_block": bool, "devices": {mac: {...}}}
         self.store_data: dict[str, Any] = {}
+        self.trace = Trace(hass)
 
     # ----- store -----
 
@@ -109,14 +116,19 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
             return await self.hass.async_add_executor_job(fn, *args)
 
     async def _async_update_data(self) -> DecoData:
+        step, start = "device_list", time.monotonic()
         try:
             nodes = await self._call(self.client.get_device_list)
+            step = "client_list"
             clients = await self._call(self.client.get_client_list)
+            step = "black_list"
             blocked = await self._call(self.client.get_blocked_macs)
         except DecoAuthError as err:
+            self.trace.record("poll_error", step=step, error=str(err), elapsed_s=_since(start))
             # Stop polling: repeated bad logins lock the admin account on the router.
             raise ConfigEntryAuthFailed(str(err)) from err
         except DecoError as err:
+            self.trace.record("poll_error", step=step, error=str(err), elapsed_s=_since(start))
             raise UpdateFailed(str(err)) from err
 
         listed = {normalize_mac(c["mac"]): c for c in clients if c.get("mac")}
@@ -127,8 +139,31 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
             blocked=blocked,
             nodes={normalize_mac(n["mac"]): n for n in nodes if n.get("mac")},
         )
+        self._trace_presence(self.data, data)
         await self._process(data)
         return data
+
+    def _trace_presence(self, prev: DecoData | None, data: DecoData) -> None:
+        """Trace when a device HA has blocked/unblocked appears, disappears or changes IP."""
+        for mac, dev in self.devices.items():
+            if not dev.get("traced"):
+                continue
+            client = data.listed.get(mac)
+            old = prev.listed.get(mac) if prev else None
+            if (
+                prev is None
+                or (old is None) != (client is None)
+                or (mac in prev.blocked) != (mac in data.blocked)
+                or (old or {}).get("ip") != (client or {}).get("ip")
+            ):
+                self.trace.record(
+                    "presence",
+                    mac=mac,
+                    listed=client is not None,
+                    blocked=mac in data.blocked,
+                    client=client,
+                    clients=len(data.listed),
+                )
 
     async def _process(self, data: DecoData) -> None:
         """Remember devices, quarantine new ones and re-apply quarantine blocks."""
@@ -174,6 +209,7 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
             if not dev.get("blocked"):
                 dev["blocked"] = True
                 changed = True
+                self.trace.record("adopted_block", mac=mac)
         for mac, client in data.online.items():
             if mac in self.devices or mac in data.nodes:
                 continue
@@ -201,7 +237,9 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
                 for mac in enforce:
                     data.online.pop(mac, None)
                 _LOGGER.info("Re-applied blocks: %s", ", ".join(enforce))
+                self.trace.record("reapplied_block", macs=enforce)
             except DecoError as err:
+                self.trace.record("reapplied_block", macs=enforce, error=str(err))
                 _LOGGER.error("Failed to re-apply blocks %s: %s", enforce, err)
 
         for mac in new_pending:
@@ -253,6 +291,74 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
         except DecoError as err:
             raise HomeAssistantError(f"Deco request failed: {err}") from err
 
+    async def _traced(self, op: str, fn, mac: str) -> None:
+        """Run a block/unblock for one device, tracing the router state before and after."""
+        listed = self.data.listed.get(mac) if self.data else None
+        before = {
+            "listed": listed is not None,
+            "blocked": bool(self.data and mac in self.data.blocked),
+            "client": listed,
+        }
+        self._ensure(mac)["traced"] = True
+        start = time.monotonic()
+        try:
+            result = await self._call(self._send_traced, fn, [mac])
+        except DecoError as err:
+            self.trace.record(
+                op,
+                mac=mac,
+                before=before,
+                error=str(err),
+                error_code=err.error_code,
+                elapsed_s=_since(start),
+            )
+            raise HomeAssistantError(f"Deco request failed: {err}") from err
+        self.trace.record(op, mac=mac, before=before, elapsed_s=_since(start), **result)
+        self._schedule_probes(op, mac)
+
+    def _send_traced(self, fn, macs: list[str]) -> dict[str, Any]:
+        """Executor side of _traced: the call plus the router's raw answer."""
+        relogins = getattr(self.client, "relogins", 0)
+        self.client.last_response = None
+        start = time.monotonic()
+        fn(macs)
+        return {
+            "request_s": _since(start),
+            "relogins": getattr(self.client, "relogins", 0) - relogins,
+            "response": self.client.last_response,
+        }
+
+    def _schedule_probes(self, op: str, mac: str) -> None:
+        for delay in PROBE_DELAYS:
+
+            @callback
+            def _fire(_now, delay: int = delay) -> None:
+                self.config_entry.async_create_background_task(
+                    self.hass, self._async_probe(op, mac, delay), f"{DOMAIN} probe {mac}"
+                )
+
+            self.config_entry.async_on_unload(async_call_later(self.hass, delay, _fire))
+
+    async def _async_probe(self, op: str, mac: str, delay: int) -> None:
+        """Re-read the client and block lists and trace what the router says about mac."""
+        try:
+            clients = await self._call(self.client.get_client_list)
+            blocked = await self._call(self.client.get_blocked_macs)
+        except DecoError as err:
+            self.trace.record("probe", op=op, mac=mac, after_s=delay, error=str(err))
+            return
+        client = next((c for c in clients if _same_mac(c.get("mac"), mac)), None)
+        self.trace.record(
+            "probe",
+            op=op,
+            mac=mac,
+            after_s=delay,
+            listed=client is not None,
+            blocked=mac in blocked,
+            client=client,
+            clients=len(clients),
+        )
+
     def _ensure(self, mac: str) -> dict[str, Any]:
         now = dt_util.utcnow().isoformat()
         client = self.data.listed.get(mac, {}) if self.data else {}
@@ -263,14 +369,14 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
         mac = self._require(mac)
         if self.data and mac in self.data.nodes:
             raise HomeAssistantError("Refusing to block a Deco node")
-        await self._router(self.client.block, [mac])
+        await self._traced("block", self.client.block, mac)
         self._ensure(mac)["blocked"] = True
         self._after_change(mac, blocked=True)
 
     async def async_unblock(self, mac: str) -> None:
         """Unblock a device. Unblocking a pending/denied device approves it."""
         mac = self._require(mac)
-        await self._router(self.client.unblock, [mac])
+        await self._traced("unblock", self.client.unblock, mac)
         dev = self._ensure(mac)
         dev["blocked"] = False
         if dev.get("status") != STATUS_APPROVED:
@@ -357,3 +463,14 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
             "first_seen": dev.get("first_seen"),
             "last_seen": dev.get("last_seen"),
         }
+
+
+def _since(start: float) -> float:
+    return round(time.monotonic() - start, 3)
+
+
+def _same_mac(value: Any, mac: str) -> bool:
+    try:
+        return isinstance(value, str) and normalize_mac(value) == mac
+    except ValueError:
+        return False

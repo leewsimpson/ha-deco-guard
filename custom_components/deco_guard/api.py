@@ -143,6 +143,9 @@ class DecoClient:
         self._cipher: _SessionCipher | None = None
         self._stok = ""
         self._sysauth = ""
+        # Diagnostics: the last decrypted response, and how many re-logins _send has done.
+        self.last_response: dict[str, Any] | None = None
+        self.relogins = 0
 
     def close(self) -> None:
         self.logout()
@@ -242,6 +245,7 @@ class DecoClient:
             if not retry:
                 raise DecoError(f"Deco rejected request '{path}' (HTTP {resp.status_code})")
             self._cipher = None
+            self.relogins += 1
             return self._send(path, body, retry=False)
         try:
             return _decrypt_envelope(cipher, envelope)
@@ -256,6 +260,7 @@ class DecoClient:
         if params is not None:
             body["params"] = params
         envelope = self._send(path, body)
+        self.last_response = envelope
         if envelope.get("error_code") == 0:
             return envelope.get("result")
         if envelope.get("success") is True:

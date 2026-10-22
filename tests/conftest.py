@@ -26,6 +26,14 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
 
+@pytest.fixture(autouse=True)
+def trace_file(tmp_path):
+    """Keep the diagnostic trace out of the shared test config dir."""
+    path = tmp_path / "trace.jsonl"
+    with patch("custom_components.deco_guard.trace.TRACE_FILE", str(path)):
+        yield path
+
+
 class FakeDeco:
     """In-memory Deco: clients stay listed while blocked, like the real BE85."""
 
@@ -61,10 +69,12 @@ class FakeDeco:
     def block(self, macs):
         self.calls.append(("block", list(macs)))
         self.blocked.update(macs)
+        self.last_response = {"error_code": 0, "result": {}}
 
     def unblock(self, macs):
         self.calls.append(("unblock", list(macs)))
         self.blocked.difference_update(macs)
+        self.last_response = {"error_code": 0, "result": {}}
 
     def close(self):
         pass

@@ -212,3 +212,32 @@ async def test_service_needs_device_or_mac(hass, setup, deco):
 
     with pytest.raises(vol.Invalid):
         await hass.services.async_call(DOMAIN, "block_device", {}, blocking=True)
+
+
+async def test_unblock_is_traced_with_probes(hass, setup, deco, trace_file):
+    import json
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": LAPTOP_SWITCH}, blocking=True
+    )
+    await hass.services.async_call("switch", "turn_on", {"entity_id": LAPTOP_SWITCH}, blocking=True)
+    deco.clients.pop(LAPTOP)  # the router forgets the client after the unblock
+    for delay in (5, 30, 120):
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=delay + 1))
+        await hass.async_block_till_done()
+    await poll(hass, setup)
+    await hass.async_block_till_done()
+
+    events = [json.loads(line) for line in trace_file.read_text().splitlines()]
+    unblock = next(e for e in events if e["event"] == "unblock")
+    assert unblock["mac"] == LAPTOP and unblock["response"] == {"error_code": 0, "result": {}}
+    assert unblock["before"]["blocked"] is True and unblock["relogins"] == 0
+    probes = [e for e in events if e["event"] == "probe" and e["op"] == "unblock"]
+    assert [p["after_s"] for p in probes] == [5, 30, 120]
+    assert all(not p["listed"] and not p["blocked"] for p in probes)
+    presence = [e for e in events if e["event"] == "presence"]
+    assert presence[-1]["listed"] is False
