@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import voluptuous as vol
-from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+    callback,
+)
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
@@ -24,6 +30,15 @@ SCHEMA = vol.All(
         }
     ),
     cv.has_at_least_one_key(ATTR_DEVICE, ATTR_MAC),
+)
+
+RAW_SCHEMA = vol.Schema(
+    {
+        vol.Required("path"): cv.string,
+        vol.Optional("operation", default="read"): cv.string,
+        vol.Optional("params"): dict,
+        vol.Optional(ATTR_CONFIG_ENTRY): cv.string,
+    }
 )
 
 
@@ -69,3 +84,19 @@ def async_register_services(hass: HomeAssistant) -> None:
                 await method(coordinator, mac)
 
         hass.services.async_register(DOMAIN, name, handler, schema=SCHEMA)
+
+    async def raw_request(call: ServiceCall) -> ServiceResponse:
+        coordinator = get_coordinator(hass, call.data.get(ATTR_CONFIG_ENTRY))
+        return {
+            "response": await coordinator.async_raw(
+                call.data["path"], call.data["operation"], call.data.get("params")
+            )
+        }
+
+    hass.services.async_register(
+        DOMAIN,
+        "raw_request",
+        raw_request,
+        schema=RAW_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )

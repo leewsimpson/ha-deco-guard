@@ -147,6 +147,28 @@
           "description": "Only needed with more than one Deco network."
         }
       }
+    },
+    "raw_request": {
+      "name": "Raw router request",
+      "description": "Advanced: send any request to the Deco's local API and return its raw response. For exploring the API; write operations change router settings.",
+      "fields": {
+        "path": {
+          "name": "Path",
+          "description": "Endpoint after /cgi-bin/luci/;stok=.../, e.g. admin/client?form=black_list."
+        },
+        "operation": {
+          "name": "Operation",
+          "description": "e.g. read, list, block."
+        },
+        "params": {
+          "name": "Params",
+          "description": "Optional params object sent with the operation."
+        },
+        "config_entry_id": {
+          "name": "Deco",
+          "description": "Only needed with more than one Deco network."
+        }
+      }
     }
   }
 }

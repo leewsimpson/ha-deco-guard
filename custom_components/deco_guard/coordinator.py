@@ -359,6 +359,17 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
             clients=len(clients),
         )
 
+    async def async_raw(
+        self, path: str, operation: str, params: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """Send any request to the router and return its raw answer (API exploration)."""
+        try:
+            response = await self._call(self.client.raw, path, operation, params)
+        except DecoError as err:
+            raise HomeAssistantError(f"Deco request failed: {err}") from err
+        self.trace.record("raw", path=path, operation=operation, params=params, response=response)
+        return response
+
     def _ensure(self, mac: str) -> dict[str, Any]:
         now = dt_util.utcnow().isoformat()
         client = self.data.listed.get(mac, {}) if self.data else {}

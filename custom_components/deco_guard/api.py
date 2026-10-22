@@ -270,6 +270,15 @@ class DecoClient:
             error_code=envelope.get("error_code"),
         )
 
+    def raw(
+        self, path: str, operation: str = "read", params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Call any endpoint and return the decrypted envelope as is (for exploring the API)."""
+        body: dict[str, Any] = {"operation": operation}
+        if params is not None:
+            body["params"] = params
+        return self._send(path, body)
+
     def get_device_list(self) -> list[dict[str, Any]]:
         """Deco mesh nodes."""
         result = self.request("admin/device?form=device_list") or {}

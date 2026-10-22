@@ -39,3 +39,20 @@ forget_device:
     device_id: *device
     mac: *mac
     config_entry_id: *entry
+raw_request:
+  fields:
+    path:
+      required: true
+      example: "admin/client?form=black_list"
+      selector:
+        text:
+    operation:
+      required: false
+      default: "read"
+      selector:
+        text:
+    params:
+      required: false
+      selector:
+        object:
+    config_entry_id: *entry

@@ -241,3 +241,17 @@ async def test_unblock_is_traced_with_probes(hass, setup, deco, trace_file):
     assert all(not p["listed"] and not p["blocked"] for p in probes)
     presence = [e for e in events if e["event"] == "presence"]
     assert presence[-1]["listed"] is False
+
+
+async def test_raw_request_returns_router_answer(hass, setup, deco):
+    deco.raw = lambda path, operation, params: {"error_code": 0, "result": {"path": path}}
+    result = await hass.services.async_call(
+        DOMAIN,
+        "raw_request",
+        {"path": "admin/client?form=black_list", "operation": "list"},
+        blocking=True,
+        return_response=True,
+    )
+    assert result == {
+        "response": {"error_code": 0, "result": {"path": "admin/client?form=black_list"}}
+    }
