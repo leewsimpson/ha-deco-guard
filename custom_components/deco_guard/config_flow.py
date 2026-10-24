@@ -12,7 +12,7 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.const import CONF_HOST, CONF_PASSWORD
+from homeassistant.const import CONF_EMAIL, CONF_HOST, CONF_PASSWORD
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
     NumberSelector,
@@ -31,17 +31,23 @@ from .const import (
     DOMAIN,
     MIN_SCAN_INTERVAL,
 )
+from .tmp import TmpAuthError, TmpClient
 
 PASSWORD_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
+EMAIL_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.EMAIL))
 
 
-async def _validate(hass: HomeAssistant, host: str, password: str) -> tuple[str, str]:
-    """Log in once and return (unique_id, title). Raises DecoError subclasses."""
+async def _validate(hass: HomeAssistant, host: str, email: str, password: str) -> tuple[str, str]:
+    """Log in once over luci and once over TMP; return (unique_id, title).
+
+    Raises DecoError subclasses.
+    """
 
     def _probe() -> tuple[str, str]:
-        client = DecoClient(host, password)
+        client = DecoClient(host, password, tmp=TmpClient(host, email, password))
         try:
             nodes = client.get_device_list()
+            client.verify_tmp()
         finally:
             client.close()
         main = next((n for n in nodes if n.get("role") == "master"), nodes[0] if nodes else {})
@@ -53,6 +59,8 @@ async def _validate(hass: HomeAssistant, host: str, password: str) -> tuple[str,
 
 
 def _errors_for(err: DecoError) -> dict[str, str]:
+    if isinstance(err, TmpAuthError):
+        return {"base": "invalid_tmp_auth"}
     if isinstance(err, DecoAuthError):
         return {"base": "invalid_auth"}
     return {"base": "cannot_connect"}
@@ -66,7 +74,10 @@ class DecoGuardConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 unique_id, title = await _validate(
-                    self.hass, user_input[CONF_HOST], user_input[CONF_PASSWORD]
+                    self.hass,
+                    user_input[CONF_HOST],
+                    user_input[CONF_EMAIL],
+                    user_input[CONF_PASSWORD],
                 )
             except DecoError as err:
                 errors = _errors_for(err)
@@ -82,6 +93,9 @@ class DecoGuardConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_HOST, default=(user_input or {}).get(CONF_HOST, DEFAULT_HOST)
                     ): str,
+                    vol.Required(
+                        CONF_EMAIL, default=(user_input or {}).get(CONF_EMAIL, "")
+                    ): EMAIL_SELECTOR,
                     vol.Required(CONF_PASSWORD): PASSWORD_SELECTOR,
                 }
             ),
@@ -98,16 +112,31 @@ class DecoGuardConfigFlow(ConfigFlow, domain=DOMAIN):
         entry = self._get_reauth_entry()
         if user_input is not None:
             try:
-                await _validate(self.hass, entry.data[CONF_HOST], user_input[CONF_PASSWORD])
+                await _validate(
+                    self.hass,
+                    entry.data[CONF_HOST],
+                    user_input[CONF_EMAIL],
+                    user_input[CONF_PASSWORD],
+                )
             except DecoError as err:
                 errors = _errors_for(err)
             else:
                 return self.async_update_reload_and_abort(
-                    entry, data_updates={CONF_PASSWORD: user_input[CONF_PASSWORD]}
+                    entry,
+                    data_updates={
+                        CONF_EMAIL: user_input[CONF_EMAIL],
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                    },
                 )
+        email = (user_input or entry.data).get(CONF_EMAIL, "")
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): PASSWORD_SELECTOR}),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_EMAIL, default=email): EMAIL_SELECTOR,
+                    vol.Required(CONF_PASSWORD): PASSWORD_SELECTOR,
+                }
+            ),
             errors=errors,
         )
 

@@ -12,11 +12,12 @@ if sys.platform == "win32":  # pragma: no cover - local runs only; CI is Linux
     pytest_socket.disable_socket = lambda *a, **k: None
 
 import pytest
-from homeassistant.const import CONF_HOST, CONF_PASSWORD
+from homeassistant.const import CONF_EMAIL, CONF_HOST, CONF_PASSWORD
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.deco_guard.api import DecoAuthError
 from custom_components.deco_guard.const import DOMAIN
+from custom_components.deco_guard.tmp import TmpAuthError
 
 NODE = "74-FE-CE-23-F7-8C"
 
@@ -42,6 +43,7 @@ class FakeDeco:
         self.blocked: set[str] = set()
         self.calls: list[tuple[str, list[str]]] = []
         self.auth_fail = False
+        self.tmp_auth_fail = False  # TP-Link ID login on the TMP channel
         self.host = "http://192.168.68.1"
 
     def connect(self, mac: str, name: str, ip: str = "192.168.68.99") -> None:
@@ -66,7 +68,14 @@ class FakeDeco:
     def get_blocked_macs(self):
         return set(self.blocked)
 
+    def verify_tmp(self):
+        if self.tmp_auth_fail:
+            raise TmpAuthError("TMP login failed")
+        return set(self.blocked)
+
     def block(self, macs):
+        if self.tmp_auth_fail:
+            raise TmpAuthError("TMP login failed")
         self.calls.append(("block", list(macs)))
         self.blocked.update(macs)
         self.last_response = {"error_code": 0, "result": {}}
@@ -94,7 +103,7 @@ async def setup(hass, deco):
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id=NODE,
-        data={CONF_HOST: "http://192.168.68.1", CONF_PASSWORD: "x"},
+        data={CONF_HOST: "http://192.168.68.1", CONF_EMAIL: "me@example.com", CONF_PASSWORD: "x"},
     )
     entry.add_to_hass(hass)
     with patch("custom_components.deco_guard.DecoClient", return_value=deco):

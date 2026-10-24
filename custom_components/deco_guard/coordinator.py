@@ -238,6 +238,9 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
                     data.online.pop(mac, None)
                 _LOGGER.info("Re-applied blocks: %s", ", ".join(enforce))
                 self.trace.record("reapplied_block", macs=enforce)
+            except DecoAuthError as err:
+                self.trace.record("reapplied_block", macs=enforce, error=str(err))
+                raise ConfigEntryAuthFailed(str(err)) from err
             except DecoError as err:
                 self.trace.record("reapplied_block", macs=enforce, error=str(err))
                 _LOGGER.error("Failed to re-apply blocks %s: %s", enforce, err)
@@ -285,11 +288,17 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
         except ValueError as err:
             raise HomeAssistantError(str(err)) from err
 
+    def _failed(self, err: DecoError) -> HomeAssistantError:
+        """Error for a failed action; a rejected login also asks the user to re-authenticate."""
+        if isinstance(err, DecoAuthError):
+            self.config_entry.async_start_reauth(self.hass)
+        return HomeAssistantError(f"Deco request failed: {err}")
+
     async def _router(self, fn, macs: list[str]) -> None:
         try:
             await self._call(fn, macs)
         except DecoError as err:
-            raise HomeAssistantError(f"Deco request failed: {err}") from err
+            raise self._failed(err) from err
 
     async def _traced(self, op: str, fn, mac: str) -> None:
         """Run a block/unblock for one device, tracing the router state before and after."""
@@ -312,7 +321,7 @@ class DecoGuardCoordinator(DataUpdateCoordinator[DecoData]):
                 error_code=err.error_code,
                 elapsed_s=_since(start),
             )
-            raise HomeAssistantError(f"Deco request failed: {err}") from err
+            raise self._failed(err) from err
         self.trace.record(op, mac=mac, before=before, elapsed_s=_since(start), **result)
         self._schedule_probes(op, mac)
 

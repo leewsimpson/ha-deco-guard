@@ -2,7 +2,7 @@
 
 Vendored and adapted from https://github.com/msageha/tplink-deco-be85-api
 (GPL-3.0-or-later). Crypto was ported from pycryptodome to `cryptography`,
-which Home Assistant already ships, so the integration has no extra requirements.
+which Home Assistant already ships.
 
 The client is synchronous and keeps session state, so callers must serialise
 access (the coordinator runs every call in the executor under a lock).
@@ -15,13 +15,16 @@ import os
 import re
 from base64 import b64decode, b64encode
 from hashlib import md5
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 from cryptography.hazmat.primitives import padding as sym_padding
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+if TYPE_CHECKING:
+    from .tmp import TmpClient
 
 _SYSAUTH_RE = re.compile(r"sysauth=([^;]+)")
 # The signing RSA key is 512 bit: PKCS#1 v1.5 fits 64 - 11 = 53 bytes per block.
@@ -120,17 +123,23 @@ def _decrypt_envelope(cipher: _SessionCipher, envelope: dict[str, Any]) -> dict[
 
 
 class DecoClient:
-    """Synchronous client holding one login session to the main Deco node."""
+    """Synchronous client holding one login session to the main Deco node.
+
+    Reads go over luci. Block/unblock go over `tmp` (the Deco app's protocol), because a luci
+    block is listed but not enforced.
+    """
 
     def __init__(
         self,
         host: str,
         password: str,
         *,
+        tmp: TmpClient | None = None,
         account: str = "admin",
         verify_ssl: bool = False,
         timeout: int = 30,
     ) -> None:
+        self.tmp = tmp
         if not host.startswith(("http://", "https://")):
             host = f"http://{host}"
         self.host = host.rstrip("/")
@@ -298,11 +307,19 @@ class DecoClient:
             clients = list(clients.values())
         return {normalize_mac(c["mac"]) for c in clients if c.get("mac")}
 
+    def _tmp(self) -> TmpClient:
+        if self.tmp is None:
+            raise DecoError("Blocking needs the TP-Link ID email (Deco app protocol login)")
+        return self.tmp
+
+    def verify_tmp(self) -> set[str]:
+        """Log in over TMP once and return its block list (checks the TP-Link ID login)."""
+        return self._tmp().blocked_macs()
+
     def block(self, macs: list[str]) -> None:
-        """Add MACs to the block list. Blocked clients are refused at the router."""
-        self.request(BLACK_LIST, "block", {"client_list": [{"mac": m} for m in macs]})
+        """Block MACs at the router. The entry also shows up in the luci black_list."""
+        self.last_response = self._tmp().block(macs)
 
     def unblock(self, macs: list[str]) -> None:
-        # Unlike block, client_list is a plain list of MAC strings; objects make the
-        # router's Lua gsub fail with HTTP 500.
-        self.request(BLACK_LIST, "unblock", {"client_list": list(macs)})
+        # Never unblock over luci: it empties the list but leaves the enforced block in place.
+        self.last_response = self._tmp().unblock(macs)

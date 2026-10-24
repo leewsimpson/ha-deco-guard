@@ -179,10 +179,12 @@ async def test_auth_failure_starts_reauth(hass, deco, fail):
     deco.auth_fail = fail
     from unittest.mock import patch
 
-    from homeassistant.const import CONF_HOST, CONF_PASSWORD
+    from homeassistant.const import CONF_EMAIL, CONF_HOST, CONF_PASSWORD
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-    entry = MockConfigEntry(domain=DOMAIN, data={CONF_HOST: "h", CONF_PASSWORD: "bad"})
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_HOST: "h", CONF_EMAIL: "me@example.com", CONF_PASSWORD: "bad"}
+    )
     entry.add_to_hass(hass)
     with patch("custom_components.deco_guard.DecoClient", return_value=deco):
         await hass.config_entries.async_setup(entry.entry_id)
@@ -255,3 +257,25 @@ async def test_raw_request_returns_router_answer(hass, setup, deco):
     assert result == {
         "response": {"error_code": 0, "result": {"path": "admin/client?form=black_list"}}
     }
+
+
+async def test_rejected_tmp_login_while_enforcing_starts_reauth(hass, setup, deco):
+    """A TMP login failure on a re-block stops polling instead of retrying (account lockout)."""
+    deco.connect(NEW, "Stranger")
+    deco.tmp_auth_fail = True
+    await poll(hass, setup)
+    assert any(
+        f["context"]["source"] == "reauth" for f in hass.config_entries.flow.async_progress()
+    )
+
+
+async def test_rejected_tmp_login_on_action_starts_reauth(hass, setup, deco):
+    from homeassistant.exceptions import HomeAssistantError
+
+    deco.tmp_auth_fail = True
+    with pytest.raises(HomeAssistantError):
+        await setup.runtime_data.async_block(LAPTOP)
+    await hass.async_block_till_done()
+    assert any(
+        f["context"]["source"] == "reauth" for f in hass.config_entries.flow.async_progress()
+    )

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, Platform
+from homeassistant.const import CONF_EMAIL, CONF_HOST, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
@@ -14,6 +15,7 @@ from .const import DOMAIN, STORAGE_VERSION
 from .coordinator import DecoGuardCoordinator
 from .panel import async_register_panel, async_unregister_panel
 from .services import async_register_services
+from .tmp import TmpClient
 from .websocket import async_register_websocket
 
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
@@ -30,7 +32,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: DecoGuardConfigEntry) -> bool:
-    client = DecoClient(entry.data[CONF_HOST], entry.data[CONF_PASSWORD])
+    if not entry.data.get(CONF_EMAIL):
+        # Entries from before 0.2 have no TP-Link ID email, which block/unblock now need.
+        raise ConfigEntryAuthFailed("Deco Guard needs your TP-Link ID email to block devices")
+    host, password = entry.data[CONF_HOST], entry.data[CONF_PASSWORD]
+    client = DecoClient(host, password, tmp=TmpClient(host, entry.data[CONF_EMAIL], password))
     coordinator = DecoGuardCoordinator(hass, entry, client)
     await coordinator.async_load()
     await coordinator.async_config_entry_first_refresh()
